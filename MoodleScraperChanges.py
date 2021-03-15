@@ -208,24 +208,29 @@ class MoodleScraper:
 
 
 if __name__ == "__main__":
-    configs = config_dict()
 
-    database = configs["database"]
-    courses_file = configs["courses_file"]
-    url = configs["url"]
+    try:
+        configs = config_dict()
 
-    courses = courses_from_file(courses_file)
+        database = configs["database"]
+        courses_file = configs["courses_file"]
+        url = configs["url"]
 
-    cookies = { "MoodleSession" : moodle_session() }
-    scraper = MoodleScraper(url=url, database_file=database, cookies=cookies)
+        courses = courses_from_file(courses_file)
 
-    log = scraper.scraper(courses)
+        cookies = { "MoodleSession" : moodle_session() }
+        scraper = MoodleScraper(url=url, database_file=database, cookies=cookies)
 
-    if scraper.found:
-        print(log)
-        pyperclip.copy(f"As seguintes alterações no Moodle foram encontradas:\n\n{log}")
-    else:
-        print("Nothing new found.")
-        pyperclip.copy("Nothing new found.")
+        log = scraper.scraper(courses)
 
-    input("\nPress ENTER to exit.")
+        if scraper.found:
+            print(log)
+            pyperclip.copy(f"As seguintes alterações no Moodle foram encontradas:\n\n{log}")
+        else:
+            print("Nothing new found.")
+            pyperclip.copy("Nothing new found.")
+    except Exception as error:
+        print("\nError:\n")
+        print(error)
+
+    input("\n\nPress ENTER to exit.")
