@@ -51,15 +51,10 @@ class DatabaseConnection:
             self.conn.commit()
             self.conn.close()
 
-
-class Database:
-    def __init__(self, file):
-        self.file = file
-
-    def exists_table(self, table):
-        with DatabaseConnection(self.file) as db:
-            db.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name=?", (table,))
-            return db.fetchone()[0] == 1
+    @classmethod
+    def exists_database_table(cls, cursor, table):
+        cursor.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        return cursor.fetchone()[0] == 1
 
 
 class MoodleScraper:
@@ -172,7 +167,7 @@ class MoodleScraper:
         table_name = f"courseid_{course_id}"  # must not start with a number.
 
         with DatabaseConnection(self.database_file) as db:
-            if not Database(self.database_file).exists_table(table_name):
+            if not DatabaseConnection.exists_database_table(db, table_name):
                 db.execute(f"CREATE TABLE {table_name} (content TEXT UNIQUE)")
 
             db.execute(f"SELECT * FROM {table_name}")
