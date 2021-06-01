@@ -1,3 +1,5 @@
-60 = Example 1
-80 = Example 2
-100 = Example 3
+60 ; Example 1 ; all
+80 ; Example 2 ; older
+100 ; Example 3 ; older and section
+120 ; Example 4 ; section
+140 ; Example 4 ; new
