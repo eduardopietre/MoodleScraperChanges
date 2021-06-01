@@ -90,98 +90,103 @@ class DatabaseConnection:
         return cursor.fetchone()[0] == 1
 
 
-def parse_old_style(topics_elem):
-    lis = topics_elem.find_all("li")
-    if len(lis) <= 0:
-        raise AssertionError("Error, maybe invalid credentials? len(lis) <= 0")
+class UrlScrapper:
 
-    texts = []
-    for li in lis:
-        contents = li.find_all("div", class_="content")
-        if len(contents) > 0:
-            text = contents[0].text
-            texts.append(text)
+    def __init__(self, session, course_url, course_id, course_name, parser_type):
+        self.session = session
+        self.course_url = course_url
+        self.course_id = course_id
+        self.course_name = course_name
+        self.parser_type = parser_type
 
-    return texts
+        self.use_older_parser = parser_type == PARSER_OLDER or parser_type == PARSER_OLDER_AND_SECTION or parser_type == PARSER_ALL
+        self.use_sections_parser = parser_type == PARSER_SECTION or parser_type == PARSER_OLDER_AND_SECTION or parser_type == PARSER_ALL
+        self.use_new_parser = parser_type == PARSER_NEW or parser_type == PARSER_ALL
 
+        self.checked_urls = set()
 
-def parse_sections(session, topics_elem, course_id, course_name, parser_type):
-    section_name = topics_elem.find_all("h3", class_="sectionname")
-    section_title = topics_elem.find_all("h4", class_="section-title")
+    def scrapper(self, url):
+        self.checked_urls.add(url)
 
-    sections = section_name + section_title
+        req = self.session.get(url)
+        if req.status_code == 200:
+            soup = BeautifulSoup(req.text, "html.parser")
 
-    texts = []
-    for sec in sections:
-        for a in sec.find_all('a', href=True):
-            href = a['href']
-            if href not in CHECKED_URLS:
-                print(f"[i] Recursively checking: {href}")
-                texts.extend(
-                    scrapper_url(session, href, course_id, course_name, parser_type).texts
-                )
+            course_contents = soup.find_all("div", class_="course-content")
+            if len(course_contents) != 1:
+                raise AssertionError("Error, invalid credentials: len(course_contents) != 1")
 
-    return texts
+            texts = []
 
+            topics_elems = course_contents[0].find_all("ul", class_="topics")
+            if len(topics_elems) >= 1:
+                if self.use_older_parser: # old style
+                    for topic_elem in topics_elems:
+                        texts.extend(self.parse_old(topic_elem))
+                if self.use_sections_parser: # check sections
+                    texts.extend(self.parse_sections(topics_elems[0]))
+            elif len(topics_elems) == 0:
+                if self.use_new_parser: # new style
+                    texts.extend(self.parse_new(course_contents[0]))
 
-def parse_new_style(session, course_content, course_url, course_id, course_name, parser_type):
-    texts = []
-
-    for content in course_content.find_all("div", class_="content"):
-        activities = content.find_all("li", class_="activity")
-        for activity in activities:
-            text = activity.text
-            texts.append(text)
-
-    for a in course_content.find_all('a', href=True):
-        href = a['href'].replace("§ion=", "&section=")
-        if course_url in href and href not in CHECKED_URLS:
-            print(f"[i] Recursively checking: {href}")
-            texts.extend(
-                scrapper_url(session, href, course_id, course_name, parser_type).texts
-            )
-
-    return texts
+            return ScrappedResult(url, self.course_id, self.course_name, texts)
+        else:
+            print(f"Error, URL {url} returned status code {req.status_code}")
 
 
-def scrapper_url(session, course_url, course_id, course_name, parser_type):
-    CHECKED_URLS.add(course_url)
-
-    req = session.get(course_url)
-    if req.status_code == 200:
-        soup = BeautifulSoup(req.text, "html.parser")
-
-        course_contents = soup.find_all("div", class_="course-content")
-        if len(course_contents) != 1:
-            raise AssertionError("Error, invalid credentials: len(course_contents) != 1")
+    def parse_old(self, topics_elem):
+        lis = topics_elem.find_all("li")
+        if len(lis) <= 0:
+            raise AssertionError("Error, maybe invalid credentials? len(lis) <= 0")
 
         texts = []
+        for li in lis:
+            contents = li.find_all("div", class_="content")
+            if len(contents) > 0:
+                text = contents[0].text
+                texts.append(text)
 
-        topics_elems = course_contents[0].find_all("ul", class_="topics")
-        if len(topics_elems) >= 1:
-            if parser_type == PARSER_OLDER or parser_type == PARSER_OLDER_AND_SECTION or parser_type == PARSER_ALL:
-                # old style
-                for topic_elem in topics_elems:
-                    texts.extend(
-                        parse_old_style(topic_elem)
-                    )
-            if parser_type == PARSER_SECTION or parser_type == PARSER_OLDER_AND_SECTION or parser_type == PARSER_ALL:
-                # check sections
-                texts.extend(
-                    parse_sections(session, topics_elems[0], course_id, course_name, parser_type)
-                )
-        elif len(topics_elems) == 0:
-            if parser_type == PARSER_NEW or parser_type == PARSER_ALL:
-                # new style
-                texts.extend(
-                    parse_new_style(session, course_contents[0], course_url, course_id, course_name, parser_type)
-                )
+        return texts
 
-        return ScrappedResult(course_url, course_id, course_name, texts)
 
-    else:
-        print(f"Error, URL {course_url} returned status code {req.status_code}")
+    def parse_sections(self, topics_elem):
+        section_name = topics_elem.find_all("h3", class_="sectionname")
+        section_title = topics_elem.find_all("h4", class_="section-title")
 
+        sections = section_name + section_title
+
+        texts = []
+        for sec in sections:
+            for a in sec.find_all('a', href=True):
+                href = a['href']
+                if href not in self.checked_urls:
+                    print(f"[i] Recursively checking: {href}")
+                    texts.extend(self.scrapper(href).texts)
+
+        return texts
+
+
+    def parse_new(self, course_content):
+        texts = []
+
+        for content in course_content.find_all("div", class_="content"):
+            activities = content.find_all("li", class_="activity")
+            for activity in activities:
+                text = activity.text
+                texts.append(text)
+
+        for a in course_content.find_all('a', href=True):
+            href = a['href'].replace("§ion=", "&section=")
+            if self.course_url in href and href not in self.checked_urls:
+                print(f"[i] Recursively checking: {href}")
+                texts.extend(self.scrapper(href).texts)
+
+        return texts
+
+
+def do_scrapper(session, course_url, course_id, course_name, parser_type):
+    scrapper = UrlScrapper(session, course_url, course_id, course_name, parser_type)
+    return scrapper.scrapper(course_url)
 
 
 class MoodleScraper:
@@ -200,7 +205,7 @@ class MoodleScraper:
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=max(len(courses), 8)) as executor:
                 futures = (
-                    executor.submit(scrapper_url, session, f"{self.base_url}course/view.php?id={c.id}", c.id, c.name, c.parser)
+                    executor.submit(do_scrapper, session, f"{self.base_url}course/view.php?id={c.id}", c.id, c.name, c.parser)
                     for c in courses
                 )
                 for future in concurrent.futures.as_completed(futures):
