@@ -1,21 +1,54 @@
 # -*- coding: utf-8 -*-
 import configparser
+from typing import Any
 import requests
 import sqlite3
 import pyperclip
 import concurrent.futures
 from bs4 import BeautifulSoup
 from dataclasses import dataclass
+from enum import Enum, auto
 
 
 CHECKED_URLS = set()
 
 
-PARSER_ALL = "all"
-PARSER_OLDER = "older"
-PARSER_NEW = "new"
-PARSER_SECTION = "section"
-PARSER_OLDER_AND_SECTION = "older and section"
+class ParserTypes(Enum):
+    ALL = auto()
+    OLDER = auto()
+    NEW = auto()
+    SECTION = auto()
+    OLDER_AND_SECTION = auto()
+
+    @staticmethod
+    def from_str(s : str):
+        pairs = {
+            "all" : ParserTypes.ALL,
+            "older" : ParserTypes.OLDER,
+            "new" : ParserTypes.NEW,
+            "section" : ParserTypes.SECTION,
+            "older and section" : ParserTypes.OLDER_AND_SECTION,
+        }
+
+        if s not in pairs:
+            raise NotImplementedError
+
+        return pairs[s]
+
+
+    @staticmethod
+    def is_older_parser(parser_type):
+        return parser_type == ParserTypes.OLDER or parser_type == ParserTypes.OLDER_AND_SECTION or parser_type == ParserTypes.ALL
+    
+
+    @staticmethod
+    def is_sections_parser(parser_type):
+        return parser_type == ParserTypes.SECTION or parser_type == ParserTypes.OLDER_AND_SECTION or parser_type == ParserTypes.ALL
+    
+
+    @staticmethod
+    def is_new_parser(parser_type):
+        return parser_type == ParserTypes.NEW or parser_type == ParserTypes.ALL
 
 
 @dataclass
@@ -30,15 +63,15 @@ class ScrappedResult:
     course_url : str
     course_id : str
     course_name : str
-    texts : list
+    texts : list[str]
 
 
-def moodle_session(file="MoodleSession.txt"):
+def moodle_session(file : str = "MoodleSession.txt") -> str:
     with open(file, "r") as file:
         return file.read().strip()
 
 
-def config_dict(file="config.ini"):
+def config_dict(file : str = "config.ini") -> dict[str, str]:
     config = configparser.ConfigParser()
     config.read(file)
     settings = config["SETTINGS"]
@@ -55,7 +88,7 @@ def config_dict(file="config.ini"):
     }
 
 
-def courses_from_file(file):
+def courses_from_file(file : str) -> list[CourseConfig]:
     courses = []
     with open(file, "r", encoding="UTF-8") as file:
         for line in file:
@@ -64,18 +97,18 @@ def courses_from_file(file):
                 CourseConfig(
                     course_id.strip(),
                     course_name.strip(),
-                    parser.strip().lower()
+                    ParserTypes.from_str(parser.strip().lower())
                 )
             )
     return courses
 
 
 class DatabaseConnection:
-    def __init__(self, file):
+    def __init__(self, file : str):
         self.file = file
         self.conn = None
 
-    def __enter__(self):
+    def __enter__(self) -> sqlite3.Cursor:
         self.conn = sqlite3.connect(self.file)
         return self.conn.cursor()
 
@@ -85,27 +118,27 @@ class DatabaseConnection:
             self.conn.close()
 
     @classmethod
-    def exists_database_table(cls, cursor, table):
+    def exists_database_table(cls, cursor : sqlite3.Cursor, table : str) -> bool:
         cursor.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name=?", (table,))
         return cursor.fetchone()[0] == 1
 
 
 class UrlScrapper:
 
-    def __init__(self, session, course_url, course_id, course_name, parser_type):
+    def __init__(self, session : requests.Session, course_url : str, course_id : str, course_name : str, parser_type : ParserTypes):
         self.session = session
         self.course_url = course_url
         self.course_id = course_id
         self.course_name = course_name
-        self.parser_type = parser_type
 
-        self.use_older_parser = parser_type == PARSER_OLDER or parser_type == PARSER_OLDER_AND_SECTION or parser_type == PARSER_ALL
-        self.use_sections_parser = parser_type == PARSER_SECTION or parser_type == PARSER_OLDER_AND_SECTION or parser_type == PARSER_ALL
-        self.use_new_parser = parser_type == PARSER_NEW or parser_type == PARSER_ALL
+        self.use_older_parser = ParserTypes.is_older_parser(parser_type)
+        self.use_sections_parser = ParserTypes.is_sections_parser(parser_type)
+        self.use_new_parser = ParserTypes.is_new_parser(parser_type)
 
         self.checked_urls = set()
 
-    def scrapper(self, url):
+
+    def scrapper(self, url : str) -> ScrappedResult:
         self.checked_urls.add(url)
 
         req = self.session.get(url)
@@ -134,7 +167,7 @@ class UrlScrapper:
             print(f"Error, URL {url} returned status code {req.status_code}")
 
 
-    def parse_old(self, topics_elem):
+    def parse_old(self, topics_elem : Any) -> list[str]:
         lis = topics_elem.find_all("li")
         if len(lis) <= 0:
             raise AssertionError("Error, maybe invalid credentials? len(lis) <= 0")
@@ -149,7 +182,7 @@ class UrlScrapper:
         return texts
 
 
-    def parse_sections(self, topics_elem):
+    def parse_sections(self, topics_elem : Any) -> list[str]:
         section_name = topics_elem.find_all("h3", class_="sectionname")
         section_title = topics_elem.find_all("h4", class_="section-title")
 
@@ -166,7 +199,7 @@ class UrlScrapper:
         return texts
 
 
-    def parse_new(self, course_content):
+    def parse_new(self, course_content : Any) -> list[str]:
         texts = []
 
         for content in course_content.find_all("div", class_="content"):
@@ -184,21 +217,21 @@ class UrlScrapper:
         return texts
 
 
-def do_scrapper(session, course_url, course_id, course_name, parser_type):
+def do_scrapper(session : requests.Session, course_url : str, course_id : str, course_name : str, parser_type : ParserTypes) -> ScrappedResult:
     scrapper = UrlScrapper(session, course_url, course_id, course_name, parser_type)
     return scrapper.scrapper(course_url)
 
 
 class MoodleScraper:
 
-    def __init__(self, url, database_file, cookies):
+    def __init__(self, url : str, database_file : str, cookies : dict[str, str]):
         self.cookies = cookies
         self.base_url = url
         self.database_file = database_file
         self.log_parts = []
         self.found = False
 
-    def scraper(self, courses):
+    def scraper(self, courses : list[CourseConfig]) -> str:
         with requests.Session() as session:
             for k, v in self.cookies.items():
                 session.cookies[k] = v
@@ -217,7 +250,7 @@ class MoodleScraper:
 
         return self.generate_log()
 
-    def update_database(self, course_id, course_name, texts):
+    def update_database(self, course_id : str, course_name : str, texts : list[str]) -> None:
         table_name = f"courseid_{course_id}"  # must not start with a number.
 
         with DatabaseConnection(self.database_file) as db:
@@ -240,8 +273,8 @@ class MoodleScraper:
 
                     self.log_parts.append(text)
 
-    def generate_log(self):
-        def clean_extra(text):
+    def generate_log(self) -> str:
+        def clean_extra(text : str) -> str:
             replace_pairs = [  # list, preserve order
                 ["completo", ""],
                 ["Não concluído", ""],
